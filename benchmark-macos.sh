@@ -3,7 +3,28 @@
 set -e
 trap 'echo "Error on line $LINENO: command -> $BASH_COMMAND"' ERR
 
-# For macOS, GNU coreutils may be required (e.g., install coreutils via Homebrew)
+# Use GNU date if available
+DATE_CMD() {
+    gdate +%s%N 2>/dev/null || date +%s%N
+}
+
+# ------------------------
+# Initialize timing arrays
+# ------------------------
+declare -a cpu_hash_times=()
+declare -a cpu_comp_times=()
+declare -a cpu_pi_times=()
+
+declare -a mem_write_times=()
+declare -a mem_read_times=()
+declare -a mem_sizes=()
+
+declare -a disk_seq_times=()
+declare -a disk_rand_times=()
+declare -a disk_mixed_times=()
+
+declare -a network_latency_times=()
+
 echo "Starting host benchmark..."
 echo "=========================="
 echo "System Information:"
@@ -23,113 +44,136 @@ echo "Network Info:"
 ifconfig
 echo "=========================="
 
+# ------------------------
+# CPU Benchmark
+# ------------------------
 echo "Running CPU benchmark..."
 
 echo "1. Hash computation test (3 iterations):"
 for i in {1..3}; do
-    START=$(gdate +%s%N 2>/dev/null || date +%s%N)
-    dd if=/dev/urandom bs=1m count=1200 2>/dev/null | shasum >/dev/null
-    END=$(gdate +%s%N 2>/dev/null || date +%s%N)
+    START=$(DATE_CMD)
+    dd if=/dev/urandom bs=1m count=1200 status=none | shasum >/dev/null
+    END=$(DATE_CMD)
     DURATION=$(( (END - START) / 1000000 ))
+    cpu_hash_times+=($DURATION)
     echo "  Iteration $i: ${DURATION}ms"
 done
 
 echo "2. Compression test (3 iterations):"
 for i in {1..3}; do
-    START=$(gdate +%s%N 2>/dev/null || date +%s%N)
-    dd if=/dev/urandom bs=1m count=128 2>/dev/null | gzip > /dev/null
-    END=$(gdate +%s%N 2>/dev/null || date +%s%N)
+    START=$(DATE_CMD)
+    dd if=/dev/urandom bs=1m count=128 status=none | gzip > /dev/null
+    END=$(DATE_CMD)
     DURATION=$(( (END - START) / 1000000 ))
+    cpu_comp_times+=($DURATION)
     echo "  Iteration $i: ${DURATION}ms"
 done
 
 echo "3. Pi calculation test (3 iterations):"
 for i in {1..3}; do
-    START=$(gdate +%s%N 2>/dev/null || date +%s%N)
+    START=$(DATE_CMD)
     echo "scale=2500; 4*a(1)" | bc -l >/dev/null
-    END=$(gdate +%s%N 2>/dev/null || date +%s%N)
+    END=$(DATE_CMD)
     DURATION=$(( (END - START) / 1000000 ))
+    cpu_pi_times+=($DURATION)
     echo "  Iteration $i: ${DURATION}ms"
 done
 
+# ------------------------
+# Memory Benchmark
+# ------------------------
 echo -e "\nRunning memory benchmark..."
-# macOS does not provide free(1); this is a placeholder.
 echo "Initial memory usage: N/A"
 SIZE_LIST=(512 1024 2048)
 for SIZE in "${SIZE_LIST[@]}"; do
     echo "Testing ${SIZE}MB:"
-    START=$(gdate +%s%N 2>/dev/null || date +%s%N)
+    # Write test: write a file (4 iterations)
+    START=$(DATE_CMD)
     for j in {1..4}; do
-        dd if=/dev/zero of=/tmp/host_test_write_${j} bs=1m count=$SIZE 2>/dev/null
+        dd if=/dev/zero of=/tmp/host_test_write_${j} bs=1m count=$SIZE status=none
         sync
     done
-    END=$(gdate +%s%N 2>/dev/null || date +%s%N)
+    END=$(DATE_CMD)
     DURATION=$(( (END - START) / 1000000 ))
+    mem_write_times+=($DURATION)
     echo "  Write test: ${DURATION}ms"
     rm -f /tmp/host_test_write_*
+
+    # Read test: create and then read the file (4 iterations)
     for j in {1..4}; do
-        dd if=/dev/zero of=/tmp/host_test_read_${j} bs=1m count=$SIZE 2>/dev/null
+        dd if=/dev/zero of=/tmp/host_test_read_${j} bs=1m count=$SIZE status=none
     done
-    START=$(gdate +%s%N 2>/dev/null || date +%s%N)
+    START=$(DATE_CMD)
     for j in {1..4}; do
-        dd if=/tmp/host_test_read_${j} of=/dev/null bs=1m 2>/dev/null
+        dd if=/tmp/host_test_read_${j} of=/dev/null bs=1m status=none
     done
-    END=$(gdate +%s%N 2>/dev/null || date +%s%N)
+    END=$(DATE_CMD)
     DURATION=$(( (END - START) / 1000000 ))
+    mem_read_times+=($DURATION)
     echo "  Read test: ${DURATION}ms"
     rm -f /tmp/host_test_read_*
+
+    # Save total MB processed in 4 iterations
+    mem_sizes+=($(( SIZE * 4 )))
 done
 
+# ------------------------
+# Disk I/O Benchmark
+# ------------------------
 echo -e "\nRunning disk I/O benchmark..."
 echo "Sequential write test (3 iterations):"
 for i in {1..3}; do
-    START=$(gdate +%s%N 2>/dev/null || date +%s%N)
-    # Using "oflag=sync" instead of conv=fdatasync and "bs=1m"
-    dd if=/dev/zero of=/tmp/host_test_seq bs=1m count=4096 oflag=sync 2>/dev/null
-    END=$(gdate +%s%N 2>/dev/null || date +%s%N)
+    START=$(DATE_CMD)
+    dd if=/dev/zero of=/tmp/host_test_seq bs=1m count=4096 oflag=sync status=none
+    END=$(DATE_CMD)
     DURATION=$(( (END - START) / 1000000 ))
+    disk_seq_times+=($DURATION)
     echo "  Iteration $i: ${DURATION}ms"
     rm -f /tmp/host_test_seq
 done
 
 echo "Random write test (3 iterations):"
 for i in {1..3}; do
-    START=$(gdate +%s%N 2>/dev/null || date +%s%N)
-    # For random writes, use /dev/urandom and oflag=sync
-    dd if=/dev/urandom of=/tmp/host_test_rand bs=8k count=32768 oflag=sync 2>/dev/null
-    END=$(gdate +%s%N 2>/dev/null || date +%s%N)
+    START=$(DATE_CMD)
+    dd if=/dev/urandom of=/tmp/host_test_rand bs=8k count=32768 oflag=sync status=none
+    END=$(DATE_CMD)
     DURATION=$(( (END - START) / 1000000 ))
+    disk_rand_times+=($DURATION)
     echo "  Iteration $i: ${DURATION}ms"
     rm -f /tmp/host_test_rand
 done
 
 echo "Mixed read/write test (3 iterations):"
 for i in {1..3}; do
-    dd if=/dev/zero of=/tmp/host_test_mixed bs=1m count=2048 2>/dev/null
+    dd if=/dev/zero of=/tmp/host_test_mixed bs=1m count=2048 status=none
     sync
-    START=$(gdate +%s%N 2>/dev/null || date +%s%N)
+    START=$(DATE_CMD)
     ( for j in {1..2}; do
-          dd if=/tmp/host_test_mixed of=/dev/null bs=1m count=2048 2>/dev/null &
-          dd if=/dev/zero of=/tmp/host_test_mixed2_${j} bs=1m count=1024 oflag=sync 2>/dev/null &
+          dd if=/tmp/host_test_mixed of=/dev/null bs=1m count=2048 status=none &
+          dd if=/dev/zero of=/tmp/host_test_mixed2_${j} bs=1m count=1024 oflag=sync status=none &
       done
       wait )
-    END=$(gdate +%s%N 2>/dev/null || date +%s%N)
+    END=$(DATE_CMD)
     DURATION=$(( (END - START) / 1000000 ))
+    disk_mixed_times+=($DURATION)
     echo "  Iteration $i: ${DURATION}ms"
     rm -f /tmp/host_test_mixed /tmp/host_test_mixed2_*
 done
 
+# ------------------------
+# Network Benchmark
+# ------------------------
 echo -e "\nRunning network benchmark..."
 ENDPOINTS=("https://www.google.com" "https://www.cloudflare.com" "https://www.amazon.com")
 for endpoint in "${ENDPOINTS[@]}"; do
     echo "Testing endpoint: $endpoint"
     for i in {1..3}; do
-        START=$(gdate +%s%N 2>/dev/null || date +%s%N)
+        START=$(DATE_CMD)
         for j in {1..20}; do
             curl -s -o /dev/null "$endpoint" &
         done
         wait
-        END=$(gdate +%s%N 2>/dev/null || date +%s%N)
+        END=$(DATE_CMD)
         DURATION=$(( (END - START) / 1000000 ))
         echo "  Iteration $i: ${DURATION}ms"
     done
@@ -139,40 +183,42 @@ echo "Network latency test:"
 for i in {1..3}; do
     LATENCY=$(ping -c 1 8.8.8.8 | grep -Eo '([0-9]*\.[0-9]+)' | sed -n '3p')
     [ -z "$LATENCY" ] && LATENCY=0
+    network_latency_times+=("$LATENCY")
     echo "  Iteration $i: ${LATENCY}ms"
 done
 
+# ------------------------
+# Summary Section
+# ------------------------
 echo -e "\nBenchmark Summary:"
 echo "===================="
 echo "CPU Performance:"
 if [ ${#cpu_hash_times[@]} -eq 3 ]; then
-    sum=0
+    hash_sum=0
     for t in "${cpu_hash_times[@]}"; do
-        sum=$(echo "$sum + $t" | bc)
+        hash_sum=$(( hash_sum + t ))
     done
-    hash_avg=$(echo "scale=2; $sum / 3" | bc)
-    # 1200 MB processed for each iteration in dd command
+    hash_avg=$(echo "scale=2; $hash_sum / 3" | bc)
+    # 1200MB processed in each iteration
     hash_speed=$(echo "scale=2; 1200 / $hash_avg * 1000" | bc)
     echo "  - SHA256 Hash: ${hash_avg}ms (${hash_speed} MB/s)"
 fi
 if [ ${#cpu_comp_times[@]} -eq 3 ]; then
-    sum=0
+    comp_sum=0
     for t in "${cpu_comp_times[@]}"; do
-        sum=$(echo "$sum + $t" | bc)
+        comp_sum=$(( comp_sum + t ))
     done
-    comp_avg=$(echo "scale=2; $sum / 3" | bc)
+    comp_avg=$(echo "scale=2; $comp_sum / 3" | bc)
     comp_speed=$(echo "scale=2; 128 / $comp_avg * 1000" | bc)
     echo "  - Compression: ${comp_avg}ms (${comp_speed} MB/s)"
 fi
-
-echo "  - Pi Calculation: Average over 3 iterations:"
 if [ ${#cpu_pi_times[@]} -eq 3 ]; then
-    sum=0
+    pi_sum=0
     for t in "${cpu_pi_times[@]}"; do
-        sum=$(echo "$sum + $t" | bc)
+        pi_sum=$(( pi_sum + t ))
     done
-    pi_avg=$(echo "scale=2; $sum / 3" | bc)
-    echo "      Average time: ${pi_avg}ms"
+    pi_avg=$(echo "scale=2; $pi_sum / 3" | bc)
+    echo "  - Pi Calculation: Average time: ${pi_avg}ms"
 fi
 
 echo -e "\nMemory Performance:"
@@ -199,43 +245,44 @@ fi
 
 echo -e "\nDisk Performance:"
 if [ ${#disk_seq_times[@]} -eq 3 ]; then
-    sum=0
+    disk_seq_sum=0
     for t in "${disk_seq_times[@]}"; do
-        sum=$(echo "$sum + $t" | bc)
+        disk_seq_sum=$(( disk_seq_sum + t ))
     done
-    seq_avg=$(echo "scale=2; $sum / 3" | bc)
-    seq_speed=$(echo "scale=2; 4096 / $seq_avg * 1000" | bc)
+    disk_seq_avg=$(echo "scale=2; $disk_seq_sum / 3" | bc)
+    seq_speed=$(echo "scale=2; 4096 / $disk_seq_avg * 1000" | bc)
     echo "  - Sequential write: ${seq_speed} MB/s"
 fi
 if [ ${#disk_rand_times[@]} -eq 3 ]; then
-    sum=0
+    disk_rand_sum=0
     for t in "${disk_rand_times[@]}"; do
-        sum=$(echo "$sum + $t" | bc)
+        disk_rand_sum=$(( disk_rand_sum + t ))
     done
-    rand_avg=$(echo "scale=2; $sum / 3" | bc)
-    # 32768 blocks * 8k = 256 MB per iteration
-    rand_speed=$(echo "scale=2; 256 / $rand_avg * 1000" | bc)
+    disk_rand_avg=$(echo "scale=2; $disk_rand_sum / 3" | bc)
+    # 32768 blocks * 8K = 256 MB written per iteration
+    rand_speed=$(echo "scale=2; 256 / $disk_rand_avg * 1000" | bc)
     echo "  - Random write: ${rand_speed} MB/s"
 fi
 if [ ${#disk_mixed_times[@]} -eq 3 ]; then
-    sum=0
+    disk_mixed_sum=0
     for t in "${disk_mixed_times[@]}"; do
-        sum=$(echo "$sum + $t" | bc)
+        disk_mixed_sum=$(( disk_mixed_sum + t ))
     done
-    mixed_avg=$(echo "scale=2; $sum / 3" | bc)
-    # Mixed test: read: 2048MB*2 = 4096MB; write: 1024MB*2 = 2048MB
-    mixed_read_speed=$(echo "scale=2; 4096 / $mixed_avg * 1000" | bc)
-    mixed_write_speed=$(echo "scale=2; 2048 / $mixed_avg * 1000" | bc)
-    echo "  - Mixed I/O: ${mixed_read_speed} MB/s read, ${mixed_write_speed} MB/s write"
+    disk_mixed_avg=$(echo "scale=2; $disk_mixed_sum / 3" | bc)
+    # Mixed test: read: 2048MB*2 = 4096MB total, write: 1024MB*2 = 2048MB total.
+    read_throughput=$(echo "scale=2; 4096 / $disk_mixed_avg * 1000" | bc)
+    write_throughput=$(echo "scale=2; 2048 / $disk_mixed_avg * 1000" | bc)
+    echo "  - Mixed I/O: ${read_throughput} MB/s read, ${write_throughput} MB/s write"
 fi
 
 echo -e "\nNetwork Performance:"
 if [ ${#network_latency_times[@]} -eq 3 ]; then
-    sum=0
+    net_latency_sum=0
     for t in "${network_latency_times[@]}"; do
-        sum=$(echo "$sum + $t" | bc)
+        # Use bc for floating point arithmetic
+        net_latency_sum=$(echo "$net_latency_sum + $t" | bc)
     done
-    net_latency_avg=$(echo "scale=2; $sum / 3" | bc)
+    net_latency_avg=$(echo "scale=2; $net_latency_sum / 3" | bc)
     echo "  - Average latency: ${net_latency_avg}ms"
 fi
 
