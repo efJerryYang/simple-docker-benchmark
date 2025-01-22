@@ -11,13 +11,14 @@ RUN apk add --no-cache \
     bc \
     bind-tools \
     jq \
-    iperf3
+    iperf3 \
+    dos2unix
 
 WORKDIR /benchmark
 
 COPY scripts/benchmark.sh /benchmark/
 COPY scripts/entrypoint.sh /benchmark/
 
-RUN chmod +x /benchmark/*.sh
-
+RUN dos2unix /benchmark/benchmark.sh /benchmark/entrypoint.sh && \
+    chmod +x /benchmark/*.sh
 ENTRYPOINT ["/benchmark/entrypoint.sh"]
